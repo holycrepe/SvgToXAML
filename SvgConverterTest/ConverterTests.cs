@@ -81,14 +81,14 @@ namespace SvgConverterTest
                 TextAsGeometry = false,
                 OptimizePath = true,
             };
-            var xaml = ConverterLogic.SvgDirToXaml("..\\..\\TestFiles\\", "Test", settings);
+            var xaml = ConverterLogic.SvgDirToXaml("..\\..\\TestFiles\\", settings, new SvgConverterOptions {XamlName="Test"});
             Console.WriteLine(xaml);
         }
 
         [Test]
         public void SvgDirToXaml_with_defaultSettingsTest()
         {
-            var xaml = ConverterLogic.SvgDirToXaml("..\\..\\TestFiles\\", "Test", null);
+            var xaml = ConverterLogic.SvgDirToXaml("..\\..\\TestFiles\\", null, new SvgConverterOptions { XamlName = "Test" });
             Console.WriteLine(xaml);
         }
 

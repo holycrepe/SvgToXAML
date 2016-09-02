@@ -22,34 +22,69 @@ namespace SvgConverter
     {
         [ArgumentCommand(LongDesc = "Creates a ResourceDictionary with the svg-Images of a folder")]
         public int BuildDict(
-            [ArgumentParam(Aliases = "i", Desc = "dir to the SVGs", LongDesc = "specify folder of the graphic files to process")]
-            string inputdir,
-            [ArgumentParam(Aliases = "o", LongDesc = "Name for the xaml outputfile")]
-            string outputname,
+            [ArgumentParam(Aliases = "i", DefaultValue = null, ExplicitNeeded = false, Desc = "dir to the SVGs", LongDesc = "specify folder of the graphic files to process")]
+            string inputdir=null,
+            [ArgumentParam(Aliases = "n",  DefaultValue = null, ExplicitNeeded = false, LongDesc = "Name for the xaml resources. Can use {0} as a substitute for the source folder name, {1} for the subpath from the root folder to the source folder, and {2} for the root folder path")]
+            string outputname=null,
+            [ArgumentParam(Aliases = "o",  DefaultValue = null, ExplicitNeeded = false, LongDesc = "Output path for the xaml files. Can use {0} as a substitute for the source folder name, {1} for the subpath from the root folder to the source folder, and {2} for the root folder path")]
+            string outputpath=null,
             [ArgumentParam(DefaultValue = null, ExplicitNeeded = false, LongDesc = "folder for the xaml-Output, optional, default: folder of svgs")]
             string outputdir = null,
             [ArgumentParam(LongDesc = "Builds a htmlfile to browse the svgs, optional, default true")]
-            bool buildhtmlfile = true)
+            bool buildhtmlfile = true,
+            [ArgumentParam(ExplicitNeeded = false, Aliases = "s", Desc = "Process Top-Level Sub Directories", LongDesc = "Convert SVG Files in Top-Level Subdirectories")]
+            bool subdirs=false,
+            [ArgumentParam(ExplicitNeeded = false, Aliases = "r", Desc = "Recursively Process All Sub Directories", LongDesc = "Recursively Convert SVG Files in All Subdirectories")]
+            bool recurse=false,
+            [ArgumentParam(ExplicitNeeded = false, Aliases = "p", Desc = "Pause after operation is complete")]
+            bool pause=false)
         {
-            Console.WriteLine("Building resource dictionary...");
-
-            string outFileName;
-            if (outputdir != null)
-                outFileName = Path.Combine(outputdir, outputname);
-            else
-                outFileName = Path.Combine(inputdir, outputname);
-            if (!Path.HasExtension(outFileName))
-                outFileName = Path.ChangeExtension(outFileName, ".xaml");
-
-            File.WriteAllText(outFileName, ConverterLogic.SvgDirToXaml(inputdir, Path.GetFileNameWithoutExtension(outputname)));
-            Console.WriteLine("xaml written to: {0}", outFileName);
+            
+            var options = new SvgConverterOptions
+            {
+                OutputNameFormat = outputname,
+                OutputFileFormat = outputpath,
+                Source = inputdir,
+                Target = outputdir,
+                Recurse = recurse || subdirs,
+                RecursionDepth = recurse ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly
+            };
+            Console.WriteLine("Building resource dictionary from svg files...");
+            Console.WriteLine($"Source: {options.RootDirectory.FullName}...");
+            for (int index = 0, total= options.SourceDirectories.Length; index < total; index++)
+            {
+                string content, message;
+                var directory = options.SourceDirectories[index];
+                options.SetDirectory(directory);
+                if (ConverterLogic.SvgDirToXaml(directory, options, out content))
+                {
+                    // ReSharper disable once PossibleNullReferenceException
+                    if (!options.OutputFile.Directory.Exists)
+                    {
+                        options.OutputFile.Directory.Create();
+                    }
+                    File.WriteAllText(options.OutputFile.FullName, content);
+                    message = $"XAML File written to: {options.OutputFileName}";
+                }
+                else
+                {
+                    message = $"Skipped; no svg files found in {directory}";
+                }
+                Console.WriteLine($"Directory # {index + 1}/{total}: {message}");
+                // ReSharper disable once PossibleNullReferenceException
+            }            
 
             if (buildhtmlfile)
             {
-                var htmlFilePath = System.IO.Path.Combine(inputdir,
-                    System.IO.Path.GetFileNameWithoutExtension(outputname));
+                var htmlFilePath = System.IO.Path.Combine(options.RootDirectory.FullName,
+                    options.RootDirectory.Name);
                 var files = ConverterLogic.SvgFilesFromFolder(inputdir);
                 BuildHtmlBrowseFile(files, htmlFilePath);
+            }
+            Console.WriteLine("Operation complete...");
+            if (pause)
+            {
+                Console.Read();
             }
             return 0; //no Error
         }
@@ -237,7 +272,7 @@ namespace SvgConverter
             new XElement("html",
                 new XElement("head",
                     new XElement("title", "Browse svg images")),
-                new XElement("body", string.Format("Images in file: {0}", outputFilename),
+                new XElement("body", $"Images in file: {outputFilename}",
                     new XElement("br"),
                     files.Select(
                     f => new XElement("img",

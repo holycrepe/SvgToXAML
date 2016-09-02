@@ -24,7 +24,7 @@ namespace SvgToXaml.ViewModels
             if (PreviewSource != null && PreviewSource is BitmapImage)
             {
                 var bi = (BitmapImage)PreviewSource;
-                return string.Format("{0}x{1}", bi.PixelWidth, bi.PixelHeight);
+                return $"{bi.PixelWidth}x{bi.PixelHeight}";
             }
             return null;
         }

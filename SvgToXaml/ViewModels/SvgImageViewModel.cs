@@ -53,7 +53,7 @@ namespace SvgToXaml.ViewModels
                 {
                     var dg = (DrawingGroup) di.Drawing;
                     var bounds = (dg.ClipGeometry != null) ? dg.ClipGeometry.Bounds : dg.Bounds;
-                    return string.Format("{0:#.##}x{1:#.##}", bounds.Width, bounds.Height);
+                    return $"{bounds.Width:#.##}x{bounds.Height:#.##}";
                 }
             }
             return null;

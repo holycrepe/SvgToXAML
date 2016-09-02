@@ -61,7 +61,8 @@ namespace SvgToXaml.Infrastructure
                 if (bool.TryParse((string)param, out aBool))
                     return aBool;
             }
-            throw new InvalidDataException(string.Format("{0}: not able to convert the ConverterParameter to InvertEnum or Boolean [{1}]", this.GetType().Name, param));
+            throw new InvalidDataException(
+                                           $"{this.GetType().Name}: not able to convert the ConverterParameter to InvertEnum or Boolean [{param}]");
         }
     }
 }

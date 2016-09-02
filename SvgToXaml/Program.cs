@@ -54,7 +54,7 @@ namespace SvgToXaml
             string path = assemblyName.Name + ".dll";
             if (assemblyName.CultureInfo != null && assemblyName.CultureInfo.Equals(CultureInfo.InvariantCulture) == false)
             {
-                path = String.Format(@"{0}\{1}", assemblyName.CultureInfo, path);
+                path = $@"{assemblyName.CultureInfo}\{path}";
             }
 
             using (Stream stream = executingAssembly.GetManifestResourceStream(path))

@@ -14,7 +14,16 @@ namespace SvgConverter
         private string _svg;
         private string _objectName;
         private DependencyObject _convertedObj;
+        private SvgConverterOptions Options { get; }
 
+        public ConvertedSvgData() : this(null)
+        {
+            
+        }
+        public ConvertedSvgData(SvgConverterOptions options)
+        {
+            Options = options ?? new SvgConverterOptions();
+        }
         public string Filepath
         {
             get { return _filepath; }
@@ -51,7 +60,7 @@ namespace SvgConverter
             {
                 if (_convertedObj == null)
                 {
-                    _convertedObj = ConverterLogic.ConvertSvgToObject(_filepath, ResultMode.DrawingImage, null, out _objectName) as DependencyObject;
+                    _convertedObj = ConverterLogic.ConvertSvgToObject(_filepath, ResultMode.DrawingImage, null, Options, out _objectName) as DependencyObject;
                 }
                 return _convertedObj;
             }

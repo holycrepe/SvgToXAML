@@ -14,30 +14,45 @@ using SharpVectors.Renderers.Wpf;
 
 namespace SvgConverter
 {
-    public enum ResultMode
+    using System.Diagnostics;
+    using System.Globalization;
+    public class SvgConversionState
     {
-        DrawingGroup,
-        DrawingImage
+        public SvgConverterOptions Options;
+        public int Total;
+        public string XamlName => Options.XamlName;
+        public bool HasMultipleImages => Total > 1;
     }
     public static class ConverterLogic
     {
         static ConverterLogic()
         {
-            //bringt leider nix? _nsManager.AddNamespace("", "http://schemas.microsoft.com/winfx/2006/xaml/presentation");
-            _nsManager.AddNamespace("defns", "http://schemas.microsoft.com/winfx/2006/xaml/presentation");
-            _nsManager.AddNamespace("x", "http://schemas.microsoft.com/winfx/2006/xaml");
+            _nsManager.AddNamespace("defns", nsDef.NamespaceName);
+            _nsManager.AddNamespace("x", nsx.NamespaceName);
+            _nsManager.AddNamespace("sys", nsSys.NamespaceName);
+
         }
 
+        public static string GetNormalizedXamlName(string xamlName, string replacement="")
+        {
+
+            xamlName = ValidateName(xamlName, replacement);
+            var firstChar = Char.ToUpper(xamlName[0]);
+            return firstChar + xamlName.Remove(0, 1);
+        }
         internal static XNamespace nsx = "http://schemas.microsoft.com/winfx/2006/xaml";
         internal static XNamespace nsDef = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        internal static XNamespace nsSys = "clr-namespace:System;assembly=mscorlib";
         internal static XmlNamespaceManager _nsManager = new XmlNamespaceManager(new NameTable());
-
+        internal static XDocument Document;
+        internal static bool addedSysNamespace = false;
         public static string SvgFileToXaml(string filepath,
             ResultMode resultMode,
-            WpfDrawingSettings wpfDrawingSettings = null)
+            WpfDrawingSettings wpfDrawingSettings = null, SvgConverterOptions options=null)
         {
+            options = options ?? new SvgConverterOptions();
             string name;
-            var obj = ConvertSvgToObject(filepath, resultMode, wpfDrawingSettings, out name);
+            var obj = ConvertSvgToObject(filepath, resultMode, wpfDrawingSettings, options, out name);
             return SvgObjectToXaml(obj, wpfDrawingSettings != null ? wpfDrawingSettings.IncludeRuntime : false, name);
         }
 
@@ -54,16 +69,16 @@ namespace SvgConverter
             };
         }
 
-        public static object ConvertSvgToObject(string filepath, ResultMode resultMode, WpfDrawingSettings wpfDrawingSettings, out string name)
+        public static object ConvertSvgToObject(string filepath, ResultMode resultMode, WpfDrawingSettings wpfDrawingSettings, SvgConverterOptions options, out string name)
         {
             var dg = ConvertFileToDrawingGroup(filepath, wpfDrawingSettings);
             switch (resultMode)
             {
                 case ResultMode.DrawingGroup:
-                    name = BuildDrawingGroupName(filepath);
+                    name = BuildDrawingGroupName(filepath, options);
                     return dg;
                 case ResultMode.DrawingImage:
-                    name = BuildDrawingImageName(filepath);
+                    name = BuildDrawingImageName(filepath, options);
                     return DrawingToImage(dg);
                 default:
                     throw new ArgumentOutOfRangeException("resultMode");
@@ -84,26 +99,47 @@ namespace SvgConverter
 
         public static string SvgDirToXaml(string folder, string xamlName)
         {
-            return SvgDirToXaml(folder, xamlName, null);
+            return SvgDirToXaml(folder, null, new SvgConverterOptions {FileName = xamlName});
         }
 
-        public static string SvgDirToXaml(string folder, string xamlName, WpfDrawingSettings wpfDrawingSettings)
+        public static string SvgDirToXaml(string folder, WpfDrawingSettings wpfDrawingSettings,
+                                          SvgConverterOptions options = null)
         {
-            var files = SvgFilesFromFolder(folder);
-            var dict = ConvertFilesToResourceDictionary(files, wpfDrawingSettings);
-            var xamlUntidy = WpfObjToXaml(dict, wpfDrawingSettings != null ? wpfDrawingSettings.IncludeRuntime : false);
+            string content;
+            SvgDirToXaml(folder, options, out content, wpfDrawingSettings);
+            return content;
+        }
+        public static bool SvgDirToXaml(string folder, SvgConverterOptions options, out string content, WpfDrawingSettings wpfDrawingSettings=null)
+        {
+            //TODO: Implement and consolidate options
 
-            var doc = XDocument.Parse(xamlUntidy);
-            RemoveResDictEntries(doc.Root);
-            var drawingGroupElements = doc.Root.XPathSelectElements("defns:DrawingGroup", _nsManager).ToList();
+            var files = SvgFilesFromFolder(folder);
+            var dict = ConvertFilesToResourceDictionary(files, wpfDrawingSettings, options);
+            var xamlUntidy = WpfObjToXaml(dict, wpfDrawingSettings?.IncludeRuntime ?? false);
+
+            Document = XDocument.Parse(xamlUntidy);
+            addedSysNamespace = false;
+            RemoveResDictEntries(Document.Root);
+            var drawingGroupElements = Document.Root.XPathSelectElements("defns:DrawingGroup", _nsManager).ToList();
+            var state = new SvgConversionState
+            {
+                Options = options,
+                Total = drawingGroupElements.Count
+            };
+            if (state.Total == 0)
+            {
+                content = Document.ToString();
+                return false;
+            }
             foreach (var drawingGroupElement in drawingGroupElements)
             {
                 BeautifyDrawingElement(drawingGroupElement, null);
                 ExtractGeometries(drawingGroupElement);
             }
-            ReplaceBrushesInDrawingGroups(doc.Root, xamlName);
-            AddDrawingImagesToDrawingGroups(doc.Root);
-            return doc.ToString();
+            ReplaceResourcesInDrawingGroups(Document.Root, state);
+            AddDrawingImagesToDrawingGroups(Document.Root, options);
+            content = Document.ToString();
+            return true;
         }
 
         public static IEnumerable<string> SvgFilesFromFolder(string folder)
@@ -118,102 +154,261 @@ namespace SvgConverter
             }
         }
 
-        private static void ReplaceBrushesInDrawingGroups(XElement rootElement, string xamlName)
+        private static readonly XamlColorResourceType[] ColorResourceTypes =
+        {
+            XamlColorResourceType.Brush,
+            XamlColorResourceType.Color,
+            XamlColorResourceType.Opacity
+        };
+        
+        private static void ReplaceResourcesInDrawingGroups(XElement rootElement, SvgConversionState state)
         {
             //three steps of colouring: 1. global Color, 2, global ColorBrush, 3. local ColorBrush
             //<Color x:Key="ImagesColor1">#FF000000</Color>
             //<SolidColorBrush x:Key="ImagesColorBrush1" Color="{DynamicResource ImagesColor1}" />
             //<SolidColorBrush x:Key="JOG_BrushColor1" Color="{Binding Color, Source={StaticResource ImagesColorBrush1}}" />
+            var distinctResources = new(string[] Colors, string[] Brushes, string[] Opacities)
+            {
+                Colors = null,
+                Brushes = CollectBrushAttributesWithColor(rootElement)
+                    .Select(a => a.Value)
+                    //same Color only once
+                    .Distinct(StringComparer.InvariantCultureIgnoreCase)
+                    .ToArray(),
+                Opacities = CollectOpacityAttributesFromBrushElements(rootElement)
+                    .Select(a => Convert.ToDouble(a.Value))
+                    .Where(x => x != 1)
+                    //same Opacity only once
+                    .Distinct()
+                    .Select(x => x.ToString(CultureInfo.InvariantCulture))
+                    .ToArray()
+            };
 
-            var firstChar = Char.ToUpper(xamlName[0]);
-            xamlName = firstChar + xamlName.Remove(0, 1);
+            distinctResources.Colors = distinctResources.Brushes
+                .Concat(CollectColorAttributesFromBrushElements(rootElement)
+                            .Select(a => a.Value))
+                //same Color only once
+                .Distinct(StringComparer.InvariantCultureIgnoreCase)
+                .ToArray();
 
-            var allBrushes = CollectBrushAttributesWithColor(rootElement)
-                .Select(a => a.Value)
-                .Distinct(StringComparer.InvariantCultureIgnoreCase) //same Color only once
-                .Select((s, i) => new
-                {
-                    ResKey1 = string.Format("{0}Color{1}", xamlName, i + 1), 
-                    ResKey2 = string.Format("{0}ColorBrush{1}", xamlName, i + 1), 
-                    Color = s
-                }) //add numbers
-                .ToList();
-
-            //building Elements like: <SolidColorBrush x:Key="ImagesColorBrush1" Color="{DynamicResource ImagesColor1}" />
-            rootElement.AddFirst(allBrushes
-                .Select(brush => new XElement(nsDef + "SolidColorBrush", 
-                    new XAttribute(nsx + "Key", brush.ResKey2),
-                    new XAttribute("Color", string.Format("{{DynamicResource {0}}}", brush.ResKey1)))));
-
-            //building Elements like: <Color x:Key="ImagesColor1">#FF000000</Color>
-            rootElement.AddFirst(allBrushes
-                .Select(brush => new XElement(nsDef + "Color", 
-                    new XAttribute(nsx + "Key", brush.ResKey1),
-                    brush.Color)));
-
-            var colorKeys = allBrushes.ToDictionary(brush => brush.Color, brush => brush.ResKey2);
+            if (!addedSysNamespace && distinctResources.Opacities.Any())
+            {
+                addedSysNamespace = true;
+                Document.Root.Add(new XAttribute(XNamespace.Xmlns + "sys", nsSys.NamespaceName));
+            }
 
             var drawingGroups = rootElement.Elements(nsDef + "DrawingGroup").ToList();
+            foreach (var resourceType in ColorResourceTypes)
+            {
+                string[] distinctResourceValues;
+                switch (resourceType)
+                {
+                    case XamlColorResourceType.Color:
+                        distinctResourceValues = distinctResources.Colors;
+                        break;
+                    case XamlColorResourceType.Brush:
+                        distinctResourceValues = distinctResources.Brushes;
+                        break;
+                    case XamlColorResourceType.Opacity:
+                        distinctResourceValues = distinctResources.Opacities;
+                        break;
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(resourceType), resourceType, null);
+                }
+                ReplaceResourcesInDrawingGroup(rootElement, state, drawingGroups, distinctResourceValues, resourceType);
+            }
+        }
+
+        private static void ReplaceResourcesInDrawingGroup(XElement rootElement, SvgConversionState state, List<XElement> drawingGroups,
+                                     string[] distinctResourceValues, XamlColorResourceType resourceType)
+        {
+            // Building Elements like: 1) <SolidColorBrush x:Key="ImagesColorBrush1" Color="{DynamicResource ImagesColor1}" />
+            //                         2) <Color x:Key="ImagesColor1">#FF000000</Color>
+            //                         3) <sys:Double x:Key="ImagesOpacity1">0.90</sys:Double>
+
+            var isSingleGlobalResource = distinctResourceValues.Length < 2;
+            var resources = distinctResourceValues
+                .Select((s, i) => new XamlColorResource(isSingleGlobalResource, state.XamlName, i, s))
+                .ToList();
+            rootElement.AddFirst(resources
+                                     .Select(brush => brush.GetXElement(resourceType)));
             foreach (var node in drawingGroups)
             {
-                //get Name of DrawingGroup
-                var nameDg = node.Attribute(nsx + "Key").Value;
-                var nameBrushBase = nameDg.Replace("DrawingGroup", "Brush");
-                
-                var brushAttributes = CollectBrushAttributesWithColor(node).ToList();
-                
-                foreach (var brushAttribute in brushAttributes)
+                ReplaceResourceInDrawingGroups(state, node, resources, resourceType);
+            }
+        }
+
+        private static string GetNameFromDrawingGroupKey(string nameDg)
+            => nameDg.Substring(0, nameDg.Length - nameof(DrawingGroup).Length);
+        private static void ReplaceResourceInDrawingGroups(SvgConversionState state, XElement node, List<XamlColorResource> resources,
+                                                         XamlColorResourceType resourceType = XamlColorResourceType.Brush)
+        {
+            //get Name of DrawingGroup
+            var isBrush = resourceType == XamlColorResourceType.Brush;
+            var nameDg = node.Attribute(nsx + "Key").Value;
+            var name = GetNameFromDrawingGroupKey(nameDg);
+            var localResourceKey = resourceType.GetLocalResourceKey(state, name);
+            var elementName = resourceType.GetGlobalResourceKey();
+            var localElementType = resourceType.GetElementName();
+            //var localElementAttribute = nameof(Color);
+            var resourceKeys = resources.ToDictionary(brush => brush.Value, brush => brush.GetResourceKey(resourceType));
+            var attributes = CollectColorResourceAttributes(node, resourceType).ToList();
+            var addedGlobalElements = new List<string>();
+            var distinctLocalElements = attributes.Select(x => x.Value).Distinct().Count();
+            var isSingleResource = state.Options.ConsolidateBrushes
+                ? (resourceKeys.Count <= 1 && distinctLocalElements <= 1)
+                : attributes.Count <= 1;
+            for (int index = 0, total = attributes.Count; index < total; index++)
+            {
+                var attribute = attributes[index];
+                var color = attribute.Value;
+                string resKey;
+                if (resourceKeys.TryGetValue(color, out resKey))
                 {
-                    var color = brushAttribute.Value;
-                    string resKey;
-                    if (colorKeys.TryGetValue(color, out resKey))
-                    {   //global color found
-                        
-                        //build resourcename
-                        var localName = brushAttributes.Count > 1
-                            ? string.Format("{0}Color{1}", nameBrushBase, brushAttributes.IndexOf(brushAttribute) + 1)
-                            : string.Format("{0}Color", nameBrushBase); //dont add number if only one color
-                        node.AddBeforeSelf(new XElement(nsDef + "SolidColorBrush", 
-                            new XAttribute(nsx + "Key", localName), 
-                            new XAttribute("Color", string.Format("{{Binding Color, Source={{StaticResource {0}}}}}", resKey)) ));
-                        brushAttribute.Value = "{DynamicResource " + localName + "}";
+                    //global color found
+                    string localName = null;
+                    int resKeyNumber; 
+                    var parsedResKey = int.TryParse(resKey.Substring(state.XamlName.Length + elementName.Length),
+                                                    out resKeyNumber);
+                    var addLocalResource = true;
+                    if (distinctLocalElements == 1 || resourceKeys.Count == 1)
+                    {
+                        //if (!parsedResKey || !isBrush) { }
+                        resKeyNumber = 0;
+                        parsedResKey = true;
                     }
+                    //build resourcename
+                    if (state.Options.ConsolidateBrushes)
+                    {
+                        if (parsedResKey && resKeyNumber == 1 && isSingleResource)
+                        {
+                            resKeyNumber = 0;
+                        }
+                        Debug.Assert(parsedResKey, nameof(parsedResKey));
+                        if (addedGlobalElements.Contains(resKey) || !state.HasMultipleImages)
+                        {
+                            addLocalResource = false;
+                        }
+                        else
+                        {
+                            addedGlobalElements.Add(resKey);                            
+                        }
+                        if (state.HasMultipleImages && parsedResKey && resKeyNumber > 0)
+                        {
+                            resKeyNumber = addedGlobalElements.IndexOf(resKey) + 1;
+                        }
+                    }
+                    else
+                    {
+                        //dont add number if only one resource
+                        resKeyNumber = isSingleResource
+                            ? 0
+                            : index + 1;
+                    }
+                    localName = $"{localResourceKey}{(resKeyNumber > 0 ? resKeyNumber.ToString() : "")}";
+                    //TODO: Temporarily skipping refactoring for non-brush resources... Update proxy for non-brush resources and remove the following line
+                    if (!isBrush)
+                        localName = resKey;
+                    attribute.Value = "{DynamicResource " + localName + "}";
+
+                    if (!addLocalResource)
+                        continue;
+                    //TODO: Temporarily skipping refactoring for non-brush resources... Update proxy for non-brush resources and remove the following line
+                    if (!isBrush)
+                        continue;
+                    XAttribute newElementAttribute;
+                    var newElement = new XElement(nsDef + (isBrush
+                                                      ? localElementType
+                                                      : nameof(DynamicResourceExtension)),
+                                                  new XAttribute(nsx + "Key", localName));
+
+                    if (!addLocalResource)
+                        continue;
+                    switch (resourceType)
+                    {
+                        case XamlColorResourceType.Opacity:
+                        case XamlColorResourceType.Color:
+                            //TODO: Update this code, since we cannot use a DynamicResource as a proxy for the original resource.
+                            newElementAttribute = new XAttribute(nameof(DynamicResourceExtension.ResourceKey),
+                                                                 resKey);
+                            break;
+                        case XamlColorResourceType.Brush:
+                            newElementAttribute = new XAttribute(nameof(Color),
+                                                                 $"{{Binding Color, Source={{StaticResource {resKey}}}}}");
+                            break;
+                        default:
+                            throw new ArgumentOutOfRangeException(nameof(resourceType), resourceType, null);
+                    }
+                    newElement.Add(newElementAttribute);
+                    node.AddBeforeSelf(newElement);
+
                 }
             }
         }
 
-        private static IEnumerable<XAttribute> CollectBrushAttributesWithColor(XElement drawingElement)
+        private static IEnumerable<XAttribute> CollectColorResourceAttributes(XElement drawingElement,
+                                                                              XamlColorResourceType resourceType)
         {
-            return drawingElement.Descendants()
-                .SelectMany(d => d.Attributes())
-                .Where(a => a.Name.LocalName == "Brush" || a.Name.LocalName == "ForegroundBrush")
-                .Where(a => a.Value.StartsWith("#")); //is Color like #FF000000
+            switch (resourceType)
+            {
+                case XamlColorResourceType.Color:
+                    return CollectColorAttributesFromBrushElements(drawingElement);
+                case XamlColorResourceType.Brush:
+                    return CollectBrushAttributesWithColor(drawingElement);
+                case XamlColorResourceType.Opacity:
+                    return CollectOpacityAttributesFromBrushElements(drawingElement);
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(resourceType), resourceType, null);
+            }
         }
 
-        private static void AddDrawingImagesToDrawingGroups(XElement rootElement)
+        private static IEnumerable<XAttribute> CollectAttributesFromBrushElements(XElement drawingElement)
+            => drawingElement.Descendants()
+                .Where(d => d.Name.LocalName == "SolidColorBrush")
+                .SelectMany(d => d.Attributes());
+
+        private static IEnumerable<XAttribute> CollectOpacityAttributesFromBrushElements(XElement drawingElement)
+            => CollectAttributesFromBrushElements(drawingElement)
+                .Where(a => a.Name.LocalName == "Opacity");
+
+        private static IEnumerable<XAttribute> CollectColorAttributesFromBrushElements(XElement drawingElement)
+            => CollectAttributesFromBrushElements(drawingElement)
+                //is Color like #FF000000
+                .Where(a => a.Name.LocalName == "Color" && a.Value.StartsWith("#"));
+
+        private static IEnumerable<XAttribute> CollectBrushAttributesWithColor(XElement drawingElement)
+            => drawingElement.Descendants()
+                .SelectMany(d => d.Attributes())
+                .Where(a =>
+                           (a.Name.LocalName == "Brush" || a.Name.LocalName == "ForegroundBrush")
+                           //is Color like #FF000000
+                           && a.Value.StartsWith("#"));
+
+        private static void AddDrawingImagesToDrawingGroups(XElement rootElement, SvgConverterOptions options)
         {
             var drawingGroups = rootElement.Elements(nsDef + "DrawingGroup").ToList();
             foreach (var node in drawingGroups)
             {
                 //get Name of DrawingGroup
                 var nameDg = node.Attribute(nsx + "Key").Value;
-                var nameImg = nameDg.Replace("DrawingGroup", "DrawingImage");
+                var name = GetNameFromDrawingGroupKey(nameDg);
+                var nameImg = name + options.DrawingImageKey;
                 //<DrawingImage x:Key="xxx" Drawing="{StaticResource cloud_5_icon_DrawingGroup}"/>
                 var drawingImage = new XElement(nsDef + "DrawingImage",
                     new XAttribute(nsx + "Key", nameImg),
-                    new XAttribute("Drawing", string.Format("{{StaticResource {0}}}", nameDg))
+                    new XAttribute("Drawing", $"{{StaticResource {nameDg}}}")
                     );
                 node.AddAfterSelf(drawingImage);
             }
         }
 
-        internal static ResourceDictionary ConvertFilesToResourceDictionary(IEnumerable<string> files, WpfDrawingSettings wpfDrawingSettings)
+        internal static ResourceDictionary ConvertFilesToResourceDictionary(IEnumerable<string> files, WpfDrawingSettings wpfDrawingSettings, SvgConverterOptions options)
         {
             var dict = new ResourceDictionary();
             foreach (var file in files)
             {
                 var drawingGroup = ConvertFileToDrawingGroup(file, wpfDrawingSettings);
-                var keyDg = BuildDrawingGroupName(file);
+                var keyDg = BuildDrawingGroupName(file, options);
                 dict[keyDg] = drawingGroup;
             }
             return dict;
@@ -336,8 +531,8 @@ namespace SvgConverter
 
         internal static string WpfObjToXaml(object wpfObject, bool includeRuntime)
         {
-            XmlXamlWriter writer = new XmlXamlWriter(new WpfDrawingSettings { IncludeRuntime = includeRuntime});
-            var xaml = writer.Save(wpfObject);
+            XmlXamlWriter writer = new XmlXamlWriter(new WpfDrawingSettings { IncludeRuntime = includeRuntime});            
+            var xaml = writer.Save(wpfObject);        
             return xaml;
         }
 
@@ -445,7 +640,7 @@ namespace SvgConverter
         {
             //get Name of DrawingGroup
             var nameDg = drawingGroupElement.Attribute(nsx + "Key").Value;
-            var name = nameDg.Replace("DrawingGroup", "");
+            var name = GetNameFromDrawingGroupKey(nameDg);
 
             //find this: <GeometryDrawing Brush="{DynamicResource _3d_view_icon_BrushColor}" Geometry="F1 M512,512z M0,0z M436.631,207.445L436.631,298.319z" />
             //var geos = drawingGroupElement.XPathSelectElements(".//defns:GeometryDrawing/@defns:Geometry", _nsManager).ToList();
@@ -458,13 +653,13 @@ namespace SvgConverter
             {
                 //build resourcename
                 var localName = geos.Count > 1
-                    ? string.Format("{0}Geometry{1}", name, geos.IndexOf(geo) + 1)
-                    : string.Format("{0}Geometry", name); //dont add number if only one Geometry
+                    ? $"{name}Geometry{geos.IndexOf(geo) + 1}"
+                    : $"{name}Geometry"; //dont add number if only one Geometry
                 //Add this: <Geometry x:Key="cloud_3_iconGeometry">F1 M512,512z M0,0z M409.338,216.254C398.922,351.523z</Geometry>
                 drawingGroupElement.AddBeforeSelf(new XElement(nsDef+"Geometry",
                     new XAttribute(nsx + "Key", localName),
                     geo.Value));
-                geo.Value = string.Format("{{StaticResource {0}}}", localName);
+                geo.Value = $"{{StaticResource {localName}}}";
             }
         }
 
@@ -489,19 +684,19 @@ namespace SvgConverter
             }
         }
 
-        internal static string BuildDrawingGroupName(string filename)
+        internal static string BuildDrawingGroupName(string filename, SvgConverterOptions options)
         {
             var rawName = Path.GetFileNameWithoutExtension(filename) + "DrawingGroup";
-            return ValidateName(rawName);
+            return ValidateName(rawName, options.DrawingKeyReplacementString);
         }
-        internal static string BuildDrawingImageName(string filename)
+        internal static string BuildDrawingImageName(string filename, SvgConverterOptions options)
         {
-            var rawName = Path.GetFileNameWithoutExtension(filename) + "DrawingImage";
-            return ValidateName(rawName);
+            var rawName = Path.GetFileNameWithoutExtension(filename) + options.DrawingImageKey;
+            return ValidateName(rawName, options.DrawingKeyReplacementString);
         }
-        internal static string ValidateName(string name)
+        internal static string ValidateName(string name, string keyReplacementString)
         {
-            var result = Regex.Replace(name, @"[^[0-9a-zA-Z]]*", "_");
+            var result = Regex.Replace(name, @"[^[0-9a-zA-Z]]*", keyReplacementString);
             if (Regex.IsMatch(result, "^[0-9].*"))
                 result = "_" + result;
             return result;

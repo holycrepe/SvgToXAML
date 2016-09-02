@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 2013
-VisualStudioVersion = 12.0.21005.1
+# Visual Studio 15
+VisualStudioVersion = 15.0.25618.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SvgConverter", "SvgConverter\SvgConverter.csproj", "{D1B291FE-A21B-4C27-930D-39CC2C963E13}"
 EndProject
@@ -10,6 +10,12 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SvgToXaml", "SvgToXaml\SvgToXaml.csproj", "{0CAF3717-683D-45D3-94A1-CFA4828EF67B}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WpfDemoApp", "WpfDemoApp\WpfDemoApp.csproj", "{1582B923-7D2E-446E-9871-F7E1DB8D911F}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{2A9CB22D-1300-4DAC-8584-ECBFEF3DC2E0}"
+	ProjectSection(SolutionItems) = preProject
+		..\..\..\Puchalapalli\src\Puchalapalli.WPF\Puchalapalli.WPF.Assets\Assets\Vectors\CheckMarks\CheckMarks.Auto.xaml = ..\..\..\Puchalapalli\src\Puchalapalli.WPF\Puchalapalli.WPF.Assets\Assets\Vectors\CheckMarks\CheckMarks.Auto.xaml
+		..\..\..\Puchalapalli\src\Puchalapalli.WPF\Puchalapalli.WPF.Assets\Assets\Vectors\Deploy.xaml = ..\..\..\Puchalapalli\src\Puchalapalli.WPF\Puchalapalli.WPF.Assets\Assets\Vectors\Deploy.xaml
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
