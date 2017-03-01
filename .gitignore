@@ -5,9 +5,7 @@
 # User-specific files
 *.suo
 *.user
-# Build results
-[Dd]ebug/
-[Rr]elease/
+# Build results 
 *_i.c
 *_p.c
 *.ilk
@@ -111,14 +109,8 @@ Thumbs.db
 *.userprefs
 
 # Build results
-[Dd]ebug/
-[Dd]ebugPublic/
-[Rr]elease/
-[Rr]eleases/
 x64/
 x86/
-build/
-bld/
 [Bb]in/
 [Oo]bj/
 
